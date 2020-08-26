@@ -1,0 +1,47 @@
+#!/usr/bin/env groovy
+
+def repoName = 'network'
+def groupName = 'terraform-modules'
+
+node {
+  withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'GITLAB_API_HAL_PRIVATE_TOKEN', passwordVariable: 'GITLAB_API_PRIVATE_TOKEN', usernameVariable: 'GITLAB_API_PRIVATE_TOKEN_USER']]) {
+    stage("Add hook to Gitlab") {
+      docker.image('ruby:2.3.1').inside {
+        sh "gem install gitlab -v 4.0.0"
+        sh "curl https://s3.amazonaws.com/pearsonyumrepo/cdos/beta/v3/add_gitlab_v4_webhook.rb | ruby -- \"\" --gitlab-api-endpoint 'https://gilligan.pearsondev.com/api/v4' --gitlab-repo '${repoName}' --gitlab-group '${groupName}' --hook '${env.JENKINS_URL}project/${env.JOB_NAME - env.BRANCH_NAME}'"
+      }
+    }
+  }
+}
+
+node {
+  if (env.BRANCH_NAME == 'master') {
+    stage("Create New Tag") {
+      checkout([
+        $class: 'GitSCM',
+        branches: scm.branches,
+        extensions: scm.extensions + [[$class: 'CleanCheckout'], [$class: 'PathRestriction', excludedRegions: 'jenkins-triggers/', includedRegions: '']],
+        userRemoteConfigs: scm.userRemoteConfigs
+      ])
+
+      if (!fileExists('VERSION')) {
+        error 'Version file must exist. There is no version file'
+      }
+
+      def versionNumber = readFile 'VERSION'
+      versionNumber += ".${BUILD_NUMBER}"
+      currentBuild.displayName = versionNumber
+
+      HEAD_TAGGED = sh(script: "git describe --exact-match --tags HEAD || echo 'continue'", returnStdout: true).trim()
+
+      if (HEAD_TAGGED == 'continue') {
+        echo "versionNumber = ${versionNumber}"
+        sh "git tag ${versionNumber}"
+        sh "git push --tags"
+      } else {
+        echo "HEAD is already tagged with ${HEAD_TAGGED}"
+        currentBuild.displayName = HEAD_TAGGED
+      }
+    }
+  }
+}

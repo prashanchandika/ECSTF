@@ -1,0 +1,8 @@
+#!/bin/bash
+
+echo ECS_CLUSTER=fisheyetest >> /etc/ecs/ecs.config 
+
+sudo mkdir -p /data 
+#sudo mount -t efs -o tls fs-314954b1:/ /data
+grep ^fs /etc/fstab || echo "fs-314954b1:/ /data efs _netdev 0 0" | sudo tee -a /etc/fstab
+sudo mount -a

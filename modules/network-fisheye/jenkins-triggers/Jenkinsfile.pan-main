@@ -1,0 +1,80 @@
+#!/usr/bin/env groovy
+
+def repoName = 'network'
+def groupName = 'terraform-modules'
+
+def pipelineStartJobs = ['be-com-main/be-com-manifest']
+
+properties([
+  [$class: 'GitLabConnectionProperty', gitLabConnection: 'Gitlab'],
+  pipelineTriggers([
+    [$class: 'GitLabPushTrigger', branchFilterType: 'NameBasedFilter', triggerOnPush: true, includeBranchesSpec : '', excludeBranchesSpec: '' ]
+  ])
+])
+
+node {
+  stage("Add hook to Gitlab") {
+    withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'GITLAB_API_HAL_PRIVATE_TOKEN', passwordVariable: 'GITLAB_API_PRIVATE_TOKEN', usernameVariable: 'GITLAB_API_PRIVATE_TOKEN_USER']]) {
+      sh """#!/bin/bash -l
+      eval \"\$(chef shell-init bash)\"
+
+      curl https://s3.amazonaws.com/pearsonyumrepo/cdos/v3/add_gitlab_webhook.rb | ruby -- \"\" --gitlab-api-endpoint 'https://gilligan.pearsondev.com/api/v4' --gitlab-repo '${repoName}' --gitlab-group '${groupName}' --hook '${env.JENKINS_URL}project/${env.JOB_NAME}'
+      """
+    }
+  }
+}
+
+stage('Trigger Pipelines') {
+  node() {
+    checkout([
+      $class: 'GitSCM',
+      branches: scm.branches,
+      extensions: scm.extensions + [[$class: 'CleanCheckout']],
+      userRemoteConfigs: scm.userRemoteConfigs
+    ])
+    step([
+      $class: 'CopyArtifact',
+      filter: 'PREVIOUS_GIT_TAG',
+      fingerprintArtifacts: true,
+      optional: true,
+      projectName: '$JOB_NAME',
+      selector: [$class: 'StatusBuildSelector', stable: false]
+    ])
+
+    PATTERN='[0-9]+\\.[0-9]+\\.[0-9]+'
+    LATEST_GIT_TAG = sh(script: "git log --tags --no-walk --pretty=\"format:%d\" | grep -m 1 -E \"$PATTERN\" -o", returnStdout: true).trim()
+
+    currentBuild.displayName="${LATEST_GIT_TAG}"
+
+    PREVIOUS_GIT_TAG=''
+    if (fileExists('PREVIOUS_GIT_TAG')) {
+      PREVIOUS_GIT_TAG = readFile('PREVIOUS_GIT_TAG').trim()
+    }
+
+    echo "previous tag: $PREVIOUS_GIT_TAG"
+
+    if (LATEST_GIT_TAG==PREVIOUS_GIT_TAG) {
+      currentBuild.description="Tag Exists"
+      error 'TAG ALREADY EXISTS! Aborting build.'
+    }
+
+    BRANCHES = sh(script: "git branch --contains $LATEST_GIT_TAG -r", returnStdout: true)
+
+    if (!BRANCHES.contains('origin/master')) {
+      error 'NOT MASTER  BRANCH!! Aborting build.'
+    }
+
+    writeFile file: 'PREVIOUS_GIT_TAG', text: LATEST_GIT_TAG
+
+    archiveArtifacts artifacts: 'PREVIOUS_GIT_TAG', fingerprint: true, onlyIfSuccessful: true
+    for (jobName in pipelineStartJobs) {
+      build job: jobName,
+      parameters: [
+        string(name: 'MANIFEST_TYPE', value: 'infrastructure'),
+        string(name: 'MANIFEST_KEY', value: env.JOB_BASE_NAME),
+        string(name: 'MANIFEST_VALUE', value: LATEST_GIT_TAG)
+      ],
+      wait: false
+    }
+  }
+}

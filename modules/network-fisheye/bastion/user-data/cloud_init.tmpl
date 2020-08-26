@@ -1,0 +1,11 @@
+#cloud-config
+package_upgrade: true
+write_files:
+  - encoding: b64
+    content: ${encoded_forward_only_sshkey}
+    owner: ubuntu:ubuntu
+    path: /home/ubuntu/forward-only-sshkey.pub
+    permissions: '0644'
+runcmd:
+  - echo >> /home/ubuntu/.ssh/authorized_keys
+  - echo command=\"\" $(cat /home/ubuntu/forward-only-sshkey.pub) >> /home/ubuntu/.ssh/authorized_keys
